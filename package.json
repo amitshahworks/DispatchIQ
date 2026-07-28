@@ -1,0 +1,41 @@
+{
+  "name": "dispatchiq",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Distributed job orchestration and background processing platform.",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=@dispatchiq/api",
+    "dev:worker": "npm run dev --workspace=@dispatchiq/worker",
+    "dev:web": "npm run dev --workspace=@dispatchiq/web",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "prisma:format": "npm run prisma:format --workspace=@dispatchiq/database",
+    "prisma:validate": "npm run prisma:validate --workspace=@dispatchiq/database",
+    "prisma:generate": "npm run prisma:generate --workspace=@dispatchiq/database",
+    "prisma:migrate": "npm run prisma:migrate --workspace=@dispatchiq/database",
+    "prisma:studio": "npm run prisma:studio --workspace=@dispatchiq/database"
+  },
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.8.0",
+    "prettier": "^3.9.6",
+    "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.9.1": true,
+    "prisma@7.9.1": true
+  }
+}
