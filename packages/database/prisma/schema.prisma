@@ -1,3 +1,15 @@
+// packages/database/prisma/schema.prisma
+//
+// DispatchIQ — Database Schema
+// Defines the persistence layer for a distributed job orchestration platform.
+//
+// Execution model: DispatchIQ guarantees AT-LEAST-ONCE job execution.
+// A worker may crash or lose its connection after successfully executing a job
+// but before it can mark that job as COMPLETED. On restart, another worker may
+// safely re-claim and re-execute the same job. JobAttempt exists to make every
+// individual execution attempt visible and auditable, so consumers of this
+// platform can build their own idempotent side effects where required.
+
 generator client {
   provider     = "prisma-client"
   output       = "../generated/prisma"
@@ -6,4 +18,264 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ===== ENUMS =====
+
+/// Application-level authorization role for a User.
+enum UserRole {
+  ADMIN
+  USER
+
+  @@map("user_role")
+}
+
+/// Category of work a Job performs.
+enum JobType {
+  EMAIL
+  WEBHOOK
+  REPORT_GENERATION
+
+  @@map("job_type")
+}
+
+/// Lifecycle state of a Job.
+enum JobStatus {
+  SCHEDULED
+  QUEUED
+  PROCESSING
+  RETRYING
+  COMPLETED
+  FAILED
+  DEAD_LETTER
+  CANCELLED
+
+  @@map("job_status")
+}
+
+/// Client-declared priority tier. The worker's claim query is responsible for
+/// mapping this value to an ordering weight in its raw SQL — no derived
+/// priority field is stored on the Job row.
+enum JobPriority {
+  LOW
+  MEDIUM
+  HIGH
+
+  @@map("job_priority")
+}
+
+/// Outcome of a single execution attempt of a Job.
+enum AttemptStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+  TIMED_OUT
+
+  @@map("attempt_status")
+}
+
+/// Severity level for a JobLog entry.
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+
+  @@map("log_level")
+}
+
+/// Structured event type for a JobLog entry, aligned 1:1 with JobStatus so
+/// every job state transition has a corresponding loggable event.
+enum LogEvent {
+  JOB_SCHEDULED
+  JOB_QUEUED
+  JOB_PROCESSING
+  JOB_RETRYING
+  JOB_COMPLETED
+  JOB_FAILED
+  JOB_DEAD_LETTERED
+  JOB_CANCELLED
+
+  @@map("log_event")
+}
+
+/// Lifecycle state of a WorkerInstance process.
+enum WorkerStatus {
+  STARTING
+  ONLINE
+  BUSY
+  UNHEALTHY
+  OFFLINE
+  STOPPING
+
+  @@map("worker_status")
+}
+
+// ===== MODELS =====
+
+/// A registered account. Owns jobs, refresh tokens, and API keys.
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(USER)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  refreshTokens RefreshToken[]
+  apiKeys       ApiKey[]
+  jobs          Job[]
+
+  @@map("users")
+}
+
+/// A hashed refresh token issued to a User for session renewal.
+/// The raw token is never stored — only its hash.
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// A hashed API key issued to a User for programmatic (non-JWT) access.
+model ApiKey {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  keyHash    String    @unique @map("key_hash")
+  name       String
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+/// A unit of work submitted by a User for asynchronous execution.
+///
+/// AT-LEAST-ONCE EXECUTION: a Job may be claimed and attempted more than once
+/// if a worker fails after execution but before reporting success. attemptCount
+/// and the related JobAttempt rows track every real execution for auditability.
+model Job {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  type     JobType
+  status   JobStatus   @default(QUEUED)
+  priority JobPriority @default(MEDIUM)
+
+  /// Arbitrary job input, interpreted by the worker based on `type`.
+  payload Json
+
+  /// Optional per-user idempotency key. Combined with userId in a unique
+  /// constraint below so resubmitting the same key for the same user is
+  /// rejected at the database level instead of relying on app-side checks.
+  idempotencyKey String? @map("idempotency_key")
+
+  maxAttempts  Int @default(3) @map("max_attempts")
+  attemptCount Int @default(0) @map("attempt_count")
+
+  /// Earliest time this job may be claimed. Used both for initial scheduling
+  /// and for retry backoff (pushed forward after each failure).
+  availableAt DateTime @default(now()) @map("available_at")
+
+  lockedAt         DateTime? @map("locked_at")
+  lockedByWorkerId String?   @map("locked_by_worker_id")
+
+  lastError   String?   @map("last_error")
+  completedAt DateTime? @map("completed_at")
+  cancelledAt DateTime? @map("cancelled_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lockedByWorker WorkerInstance? @relation(fields: [lockedByWorkerId], references: [id], onDelete: SetNull)
+  attempts       JobAttempt[]
+  logs           JobLog[]
+
+  // Per-user idempotent job creation.
+  @@unique([userId, idempotencyKey])
+  // User job listing (for example, "my jobs, newest first").
+  @@index([userId, createdAt])
+  // Per-user job status filtering, newest first.
+  @@index([userId, status, createdAt])
+  // Worker claim query and scheduled/retry availability lookup.
+  // This does not yet cover the priority ORDER BY used in the future raw SQL
+  // claim query. That index strategy will be reviewed with EXPLAIN ANALYZE.
+  @@index([status, availableAt])
+  // Stale-worker recovery: find processing jobs locked by a specific worker.
+  @@index([lockedByWorkerId, status])
+  @@map("jobs")
+}
+
+/// A single execution attempt of a Job by a specific WorkerInstance.
+model JobAttempt {
+  id               String        @id @default(uuid())
+  jobId            String        @map("job_id")
+  attemptNumber    Int           @map("attempt_number")
+  status           AttemptStatus
+  workerInstanceId String?       @map("worker_instance_id")
+
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  durationMs Int?      @map("duration_ms")
+  error      String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  job            Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  workerInstance WorkerInstance? @relation(fields: [workerInstanceId], references: [id], onDelete: SetNull)
+
+  // Prevents duplicate attempt numbers for the same job.
+  @@unique([jobId, attemptNumber])
+  // Worker execution history: attempts handled by a worker in time order.
+  @@index([workerInstanceId, startedAt])
+  @@map("job_attempts")
+}
+
+/// A structured, timestamped log line associated with a Job's lifecycle.
+model JobLog {
+  id       String   @id @default(uuid())
+  jobId    String   @map("job_id")
+  level    LogLevel
+  event    LogEvent
+  message  String
+  metadata Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  // Job logs ordered by time for the job detail timeline.
+  @@index([jobId, createdAt])
+  @@map("job_logs")
+}
+
+/// A running worker process. Tracks liveness via heartbeat for stale-worker
+/// detection and job re-queueing.
+model WorkerInstance {
+  id              String       @id @default(uuid())
+  hostname        String
+  status          WorkerStatus @default(STARTING)
+  lastHeartbeatAt DateTime     @default(now()) @map("last_heartbeat_at")
+  startedAt       DateTime     @default(now()) @map("started_at")
+  stoppedAt       DateTime?    @map("stopped_at")
+
+  lockedJobs  Job[]
+  jobAttempts JobAttempt[]
+
+  // Worker heartbeat checks, such as workers without a recent heartbeat.
+  @@index([status, lastHeartbeatAt])
+  @@map("worker_instances")
 }
