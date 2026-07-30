@@ -19,8 +19,7 @@
     "prisma:format": "npm run prisma:format --workspace=@dispatchiq/database",
     "prisma:validate": "npm run prisma:validate --workspace=@dispatchiq/database",
     "prisma:generate": "npm run prisma:generate --workspace=@dispatchiq/database",
-    "prisma:migrate": "npm run prisma:migrate --workspace=@dispatchiq/database",
-    "prisma:studio": "npm run prisma:studio --workspace=@dispatchiq/database"
+    "prisma:seed": "npm run prisma:seed --workspace=@dispatchiq/database"
   },
   "engines": {
     "node": ">=24 <25",

@@ -13,11 +13,13 @@
     "prisma:validate": "prisma validate --config prisma.config.ts",
     "prisma:generate": "prisma generate --config prisma.config.ts",
     "prisma:migrate": "prisma migrate dev --config prisma.config.ts",
+    "prisma:seed": "prisma db seed --config prisma.config.ts",
     "prisma:studio": "prisma studio --config prisma.config.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
+    "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "pg": "^8.22.0"
   },
