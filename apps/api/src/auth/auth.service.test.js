@@ -8,6 +8,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const findUserByEmailMock = vi.fn();
 const createUserMock = vi.fn();
 const storeRefreshTokenMock = vi.fn();
+const revokeRefreshTokenMock = vi.fn();
+const findRefreshTokenMock = vi.fn();
+const rotateRefreshTokenMock = vi.fn();
 
 const hashPasswordMock = vi.fn();
 const verifyPasswordMock = vi.fn();
@@ -17,13 +20,14 @@ const generateAccessTokenMock = vi.fn();
 const generateRefreshTokenMock = vi.fn();
 const hashRefreshTokenMock = vi.fn();
 const calculateRefreshTokenExpiryMock = vi.fn();
-const revokeRefreshTokenMock = vi.fn();
 
 vi.mock('./auth.repository.js', () => ({
   findUserByEmail: findUserByEmailMock,
   createUser: createUserMock,
   storeRefreshToken: storeRefreshTokenMock,
   revokeRefreshToken: revokeRefreshTokenMock,
+  findRefreshToken: findRefreshTokenMock,
+  rotateRefreshToken: rotateRefreshTokenMock,
 }));
 
 vi.mock('./auth.password.js', () => ({
@@ -41,7 +45,7 @@ vi.mock('./auth.refresh-token.js', () => ({
   calculateRefreshTokenExpiry: calculateRefreshTokenExpiryMock,
 }));
 
-const { login, logout, register } = await import('./auth.service.js');
+const { register, login, logout, refresh } = await import('./auth.service.js');
 
 describe('authentication service', () => {
   beforeEach(() => {
@@ -147,10 +151,14 @@ describe('authentication service', () => {
 
       findUserByEmailMock.mockResolvedValue(storedUser);
       verifyPasswordMock.mockResolvedValue(true);
+
       generateAccessTokenMock.mockReturnValue('access-token');
       generateRefreshTokenMock.mockReturnValue('refresh-token');
+
       hashRefreshTokenMock.mockReturnValue('refresh-token-hash');
+
       calculateRefreshTokenExpiryMock.mockReturnValue(refreshTokenExpiry);
+
       storeRefreshTokenMock.mockResolvedValue({
         id: 'refresh-token-record',
       });
@@ -215,36 +223,181 @@ describe('authentication service', () => {
       expect(storeRefreshTokenMock).not.toHaveBeenCalled();
     });
   });
-});
 
-describe('logout', () => {
-  it('hashes and revokes the supplied refresh token', async () => {
-    hashRefreshTokenMock.mockReturnValue('refresh-token-hash');
-    revokeRefreshTokenMock.mockResolvedValue({
-      count: 1,
+  describe('logout', () => {
+    it('hashes and revokes the supplied refresh token', async () => {
+      hashRefreshTokenMock.mockReturnValue('refresh-token-hash');
+
+      revokeRefreshTokenMock.mockResolvedValue({
+        count: 1,
+      });
+
+      await expect(
+        logout({
+          refreshToken: 'raw-refresh-token',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(hashRefreshTokenMock).toHaveBeenCalledWith('raw-refresh-token');
+
+      expect(revokeRefreshTokenMock).toHaveBeenCalledWith('refresh-token-hash');
     });
 
-    await expect(
-      logout({
-        refreshToken: 'raw-refresh-token',
-      }),
-    ).resolves.toBeUndefined();
+    it('remains successful when the token does not exist', async () => {
+      hashRefreshTokenMock.mockReturnValue('unknown-token-hash');
 
-    expect(hashRefreshTokenMock).toHaveBeenCalledWith('raw-refresh-token');
+      revokeRefreshTokenMock.mockResolvedValue({
+        count: 0,
+      });
 
-    expect(revokeRefreshTokenMock).toHaveBeenCalledWith('refresh-token-hash');
+      await expect(
+        logout({
+          refreshToken: 'unknown-refresh-token',
+        }),
+      ).resolves.toBeUndefined();
+    });
   });
 
-  it('remains successful when the token does not exist', async () => {
-    hashRefreshTokenMock.mockReturnValue('unknown-token-hash');
-    revokeRefreshTokenMock.mockResolvedValue({
-      count: 0,
+  describe('refresh', () => {
+    const storedToken = {
+      id: 'refresh-token-id',
+      userId: 'user-123',
+      tokenHash: 'current-token-hash',
+      expiresAt: new Date('2026-08-12T12:00:00.000Z'),
+      revokedAt: null,
+      createdAt: new Date('2026-08-05T12:00:00.000Z'),
+      user: {
+        id: 'user-123',
+        email: 'amit@example.com',
+        role: 'USER',
+        createdAt: new Date('2026-08-05T12:00:00.000Z'),
+        updatedAt: new Date('2026-08-05T12:00:00.000Z'),
+      },
+    };
+
+    it('rotates a valid refresh token and issues a new token pair', async () => {
+      const replacementExpiry = new Date('2026-08-12T12:00:00.000Z');
+
+      hashRefreshTokenMock
+        .mockReturnValueOnce('current-token-hash')
+        .mockReturnValueOnce('replacement-token-hash');
+
+      findRefreshTokenMock.mockResolvedValue(storedToken);
+
+      generateRefreshTokenMock.mockReturnValue('replacement-refresh-token');
+
+      calculateRefreshTokenExpiryMock.mockReturnValue(replacementExpiry);
+
+      rotateRefreshTokenMock.mockResolvedValue({
+        id: 'replacement-token-id',
+      });
+
+      generateAccessTokenMock.mockReturnValue('replacement-access-token');
+
+      const result = await refresh({
+        refreshToken: 'current-raw-token',
+      });
+
+      expect(findRefreshTokenMock).toHaveBeenCalledWith('current-token-hash');
+
+      expect(rotateRefreshTokenMock).toHaveBeenCalledWith({
+        currentTokenId: storedToken.id,
+        userId: storedToken.userId,
+        replacementTokenHash: 'replacement-token-hash',
+        replacementExpiresAt: replacementExpiry,
+      });
+
+      expect(generateAccessTokenMock).toHaveBeenCalledWith({
+        userId: storedToken.userId,
+        role: storedToken.user.role,
+      });
+
+      expect(result).toEqual({
+        accessToken: 'replacement-access-token',
+        refreshToken: 'replacement-refresh-token',
+      });
     });
 
-    await expect(
-      logout({
-        refreshToken: 'unknown-refresh-token',
-      }),
-    ).resolves.toBeUndefined();
+    it('rejects an unknown refresh token', async () => {
+      hashRefreshTokenMock.mockReturnValue('unknown-token-hash');
+
+      findRefreshTokenMock.mockResolvedValue(null);
+
+      await expect(
+        refresh({
+          refreshToken: 'unknown-token',
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 401,
+        code: 'INVALID_REFRESH_TOKEN',
+      });
+
+      expect(rotateRefreshTokenMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a revoked refresh token', async () => {
+      hashRefreshTokenMock.mockReturnValue('revoked-token-hash');
+
+      findRefreshTokenMock.mockResolvedValue({
+        ...storedToken,
+        revokedAt: new Date(),
+      });
+
+      await expect(
+        refresh({
+          refreshToken: 'revoked-token',
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 401,
+        code: 'INVALID_REFRESH_TOKEN',
+      });
+
+      expect(rotateRefreshTokenMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an expired refresh token', async () => {
+      hashRefreshTokenMock.mockReturnValue('expired-token-hash');
+
+      findRefreshTokenMock.mockResolvedValue({
+        ...storedToken,
+        expiresAt: new Date('2020-01-01'),
+      });
+
+      await expect(
+        refresh({
+          refreshToken: 'expired-token',
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 401,
+        code: 'INVALID_REFRESH_TOKEN',
+      });
+
+      expect(rotateRefreshTokenMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects the token when atomic rotation fails', async () => {
+      hashRefreshTokenMock
+        .mockReturnValueOnce('current-token-hash')
+        .mockReturnValueOnce('replacement-token-hash');
+
+      findRefreshTokenMock.mockResolvedValue(storedToken);
+
+      generateRefreshTokenMock.mockReturnValue('replacement-refresh-token');
+
+      calculateRefreshTokenExpiryMock.mockReturnValue(new Date('2026-08-12T12:00:00.000Z'));
+
+      rotateRefreshTokenMock.mockRejectedValue(new Error('Refresh token is no longer active.'));
+
+      await expect(
+        refresh({
+          refreshToken: 'current-token',
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 401,
+        code: 'INVALID_REFRESH_TOKEN',
+      });
+
+      expect(generateAccessTokenMock).not.toHaveBeenCalled();
+    });
   });
 });

@@ -204,6 +204,65 @@ export function revokeAllRefreshTokens(userId, revokedAt = new Date()) {
 }
 
 /**
+ * Atomically revokes an existing refresh token and creates its replacement.
+ *
+ * Both operations run inside one Prisma transaction. If either operation
+ * fails, the transaction is rolled back so the old token is not revoked
+ * without a valid replacement being persisted.
+ *
+ * @param {{
+ *   currentTokenId: string,
+ *   userId: string,
+ *   replacementTokenHash: string,
+ *   replacementExpiresAt: Date,
+ *   revokedAt?: Date
+ * }} data Refresh-token rotation data.
+ * @returns {Promise<{
+ *   id: string,
+ *   userId: string,
+ *   tokenHash: string,
+ *   expiresAt: Date,
+ *   revokedAt: Date | null,
+ *   createdAt: Date
+ * }>} Newly created replacement token record.
+ */
+export function rotateRefreshToken({
+  currentTokenId,
+  userId,
+  replacementTokenHash,
+  replacementExpiresAt,
+  revokedAt = new Date(),
+}) {
+  return prisma.$transaction(async (transaction) => {
+    const revokedToken = await transaction.refreshToken.updateMany({
+      where: {
+        id: currentTokenId,
+        userId,
+        revokedAt: null,
+        expiresAt: {
+          gt: revokedAt,
+        },
+      },
+      data: {
+        revokedAt,
+      },
+    });
+
+    if (revokedToken.count !== 1) {
+      throw new Error('Refresh token is no longer active.');
+    }
+
+    return transaction.refreshToken.create({
+      data: {
+        userId,
+        tokenHash: replacementTokenHash,
+        expiresAt: replacementExpiresAt,
+      },
+    });
+  });
+}
+
+/**
  * Deletes expired refresh-token records.
  *
  * This is a maintenance operation and is not required during every

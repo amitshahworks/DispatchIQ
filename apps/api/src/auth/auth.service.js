@@ -12,15 +12,21 @@
 import { HTTP_STATUS } from '@dispatchiq/shared';
 
 import { AppError } from '../utils/app-error.js';
-import { createUser, findUserByEmail, storeRefreshToken } from './auth.repository.js';
 import { hashPassword, verifyPassword } from './auth.password.js';
 import {
   calculateRefreshTokenExpiry,
   generateRefreshToken,
   hashRefreshToken,
 } from './auth.refresh-token.js';
+import {
+  createUser,
+  findRefreshToken,
+  findUserByEmail,
+  revokeRefreshToken,
+  rotateRefreshToken,
+  storeRefreshToken,
+} from './auth.repository.js';
 import { generateAccessToken } from './auth.tokens.js';
-import { revokeRefreshToken } from './auth.repository.js';
 
 /**
  * Registers a new standard DispatchIQ user and creates an initial session.
@@ -153,4 +159,57 @@ export async function logout(input) {
   const tokenHash = hashRefreshToken(input.refreshToken);
 
   await revokeRefreshToken(tokenHash);
+}
+
+/**
+ * Rotates a valid refresh token and issues a new authentication session.
+ *
+ * The old token is revoked and its replacement is stored atomically so a
+ * partial database failure cannot leave the user without a valid session.
+ *
+ * @param {{ refreshToken: string }} input Validated refresh request.
+ * @returns {Promise<{
+ *   accessToken: string,
+ *   refreshToken: string
+ * }>} Newly issued access and refresh tokens.
+ * @throws {AppError} When the refresh token is unknown, revoked, or expired.
+ */
+export async function refresh(input) {
+  const currentTokenHash = hashRefreshToken(input.refreshToken);
+  const storedToken = await findRefreshToken(currentTokenHash);
+
+  const isExpired = storedToken && storedToken.expiresAt.getTime() <= Date.now();
+
+  if (!storedToken || storedToken.revokedAt || isExpired) {
+    throw new AppError('Refresh token is invalid or expired.', HTTP_STATUS.UNAUTHORIZED, {
+      code: 'INVALID_REFRESH_TOKEN',
+    });
+  }
+
+  const replacementRefreshToken = generateRefreshToken();
+  const replacementTokenHash = hashRefreshToken(replacementRefreshToken);
+  const replacementExpiresAt = calculateRefreshTokenExpiry();
+
+  try {
+    await rotateRefreshToken({
+      currentTokenId: storedToken.id,
+      userId: storedToken.userId,
+      replacementTokenHash,
+      replacementExpiresAt,
+    });
+  } catch {
+    throw new AppError('Refresh token is invalid or expired.', HTTP_STATUS.UNAUTHORIZED, {
+      code: 'INVALID_REFRESH_TOKEN',
+    });
+  }
+
+  const accessToken = generateAccessToken({
+    userId: storedToken.user.id,
+    role: storedToken.user.role,
+  });
+
+  return {
+    accessToken,
+    refreshToken: replacementRefreshToken,
+  };
 }
