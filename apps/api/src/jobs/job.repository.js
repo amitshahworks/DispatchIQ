@@ -13,10 +13,11 @@
 import { prisma } from '@dispatchiq/database';
 
 /**
- * Creates a new job owned by a user.
+ * Creates a new job and its initial lifecycle log atomically.
  *
- * The service layer determines the initial status and availability timestamp
- * before calling this repository function.
+ * The nested JobLog creation ensures every persisted job begins with an
+ * auditable lifecycle event. Scheduled jobs receive JOB_SCHEDULED, while jobs
+ * available immediately receive JOB_QUEUED.
  *
  * @param {{
  *   userId: string,
@@ -28,7 +29,7 @@ import { prisma } from '@dispatchiq/database';
  *   maxAttempts: number,
  *   availableAt: Date
  * }} data Persisted job values.
- * @returns {Promise<object>} Created job record.
+ * @returns {Promise<object>} Created job with its initial lifecycle log.
  */
 export function createJob({
   userId,
@@ -40,6 +41,8 @@ export function createJob({
   maxAttempts,
   availableAt,
 }) {
+  const isScheduled = status === 'SCHEDULED';
+
   return prisma.job.create({
     data: {
       userId,
@@ -50,6 +53,26 @@ export function createJob({
       idempotencyKey,
       maxAttempts,
       availableAt,
+      logs: {
+        create: [
+          {
+            level: 'INFO',
+            event: isScheduled
+              ? 'JOB_SCHEDULED'
+              : 'JOB_QUEUED',
+            message: isScheduled
+              ? 'Job scheduled for future execution.'
+              : 'Job queued for worker execution.',
+            metadata: {
+              status,
+              availableAt: availableAt.toISOString(),
+            },
+          },
+        ],
+      },
+    },
+    include: {
+      logs: true,
     },
   });
 }

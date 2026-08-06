@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.js",
     "prisma:format": "npm run prisma:format --workspace=@dispatchiq/database",
     "prisma:validate": "npm run prisma:validate --workspace=@dispatchiq/database",
     "prisma:generate": "npm run prisma:generate --workspace=@dispatchiq/database",
