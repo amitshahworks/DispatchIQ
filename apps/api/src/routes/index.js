@@ -1,19 +1,22 @@
 /**
  * @file index.js
- * @description Root Express router. Mounts the service info and health
- * check endpoints. Later phases will mount additional route modules here
- * (auth, jobs, workers, api-keys).
+ * @description Root Express router for DispatchIQ.
+ *
+ * Mounts service metadata, database health checks, and versioned API route
+ * modules. New domain routers should be registered here under `/api/v1`.
  */
 
-import { Router } from 'express';
 import { checkDatabaseHealth } from '@dispatchiq/database';
 import { HTTP_STATUS } from '@dispatchiq/shared';
+import { Router } from 'express';
+
+import { authRouter } from '../auth/auth.routes.js';
 import { asyncHandler } from '../utils/async-handler.js';
 
 export const router = Router();
 
-router.get('/', (req, res) => {
-  res.status(HTTP_STATUS.OK).json({
+router.get('/', (_req, res) => {
+  return res.status(HTTP_STATUS.OK).json({
     success: true,
     data: {
       service: 'DispatchIQ API',
@@ -25,7 +28,7 @@ router.get('/', (req, res) => {
 
 router.get(
   '/health',
-  asyncHandler(async (req, res) => {
+  asyncHandler(async (_req, res) => {
     const isHealthy = await checkDatabaseHealth();
 
     if (!isHealthy) {
@@ -47,3 +50,5 @@ router.get(
     });
   }),
 );
+
+router.use('/api/v1/auth', authRouter);
