@@ -2,10 +2,14 @@
   "name": "@dispatchiq/worker",
   "version": "1.0.0",
   "private": true,
+  "description": "Background job execution worker for DispatchIQ.",
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/worker.js",
-    "start": "node src/worker.js",
+    "dev": "node --env-file=../../.env --watch src/worker.js",
+    "start": "node --env-file=../../.env src/worker.js",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@dispatchiq/database": "*"
   }
 }

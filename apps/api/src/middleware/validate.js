@@ -1,41 +1,83 @@
 /**
  * @file validate.js
- * @description Express middleware for validating request payloads with Zod.
+ * @description Express middleware factory for validating request data with
+ * Zod before controllers execute.
  *
- * Validation occurs before controllers execute so downstream business logic
- * always receives normalized, trusted input. Successful validation replaces
- * the original request body with the parsed result, allowing Zod transforms,
- * defaults, and coercion to be applied automatically.
+ * The middleware supports request bodies, query parameters, and route
+ * parameters. Successful validation exposes Zod's normalized result through
+ * the same request property consumed by downstream controllers.
  */
 
 import { HTTP_STATUS } from '@dispatchiq/shared';
 
 import { AppError } from '../utils/app-error.js';
 
+const SUPPORTED_TARGETS = new Set(['body', 'query', 'params']);
+
 /**
- * Creates an Express middleware that validates the incoming request body
- * against the supplied Zod schema.
+ * Assigns normalized validation output to the selected request property.
  *
- * @param {import('zod').ZodTypeAny} schema Zod schema used to validate
- * the request body.
- * @returns {import('express').RequestHandler} Validation middleware.
+ * Express 5 exposes `req.query` through a getter, so direct assignment throws.
+ * Defining an own property on the request instance safely shadows that getter
+ * for the remainder of the request lifecycle.
+ *
+ * @param {import('express').Request} req Express request.
+ * @param {'body' | 'query' | 'params'} target Validated request property.
+ * @param {unknown} value Parsed Zod output.
+ * @returns {void}
  */
-export function validate(schema) {
+function assignValidatedValue(req, target, value) {
+  if (target === 'query') {
+    Object.defineProperty(req, 'query', {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+
+    return;
+  }
+
+  req[target] = value;
+}
+
+/**
+ * Creates middleware that validates one part of an Express request.
+ *
+ * @param {import('zod').ZodType} schema Zod schema used for validation.
+ * @param {'body' | 'query' | 'params'} [target='body'] Request property to
+ * validate.
+ * @returns {import('express').RequestHandler} Express validation middleware.
+ * @throws {Error} When an unsupported validation target is configured.
+ *
+ * @example
+ * validate(registerSchema)
+ * validate(listJobsQuerySchema, 'query')
+ * validate(jobIdParamsSchema, 'params')
+ */
+export function validate(schema, target = 'body') {
+  if (!SUPPORTED_TARGETS.has(target)) {
+    throw new Error(`Unsupported validation target "${target}". Expected body, query, or params.`);
+  }
+
   return (req, _res, next) => {
-    const result = schema.safeParse(req.body);
+    const result = schema.safeParse(req[target]);
 
     if (!result.success) {
       next(
         new AppError('Request validation failed.', HTTP_STATUS.UNPROCESSABLE_ENTITY, {
           code: 'VALIDATION_ERROR',
-          details: result.error.flatten(),
+          details: {
+            target,
+            ...result.error.flatten(),
+          },
         }),
       );
 
       return;
     }
 
-    req.body = result.data;
+    assignValidatedValue(req, target, result.data);
 
     next();
   };

@@ -2,8 +2,8 @@
  * @file index.js
  * @description Root Express router for DispatchIQ.
  *
- * Mounts service metadata, database health checks, and versioned API route
- * modules. New domain routers should be registered here under `/api/v1`.
+ * Mounts service metadata, health checks, and versioned domain route modules.
+ * New API domains should be registered here under `/api/v1`.
  */
 
 import { checkDatabaseHealth } from '@dispatchiq/database';
@@ -11,6 +11,7 @@ import { HTTP_STATUS } from '@dispatchiq/shared';
 import { Router } from 'express';
 
 import { authRouter } from '../auth/auth.routes.js';
+import { jobRouter } from '../jobs/job.routes.js';
 import { asyncHandler } from '../utils/async-handler.js';
 
 export const router = Router();
@@ -52,3 +53,4 @@ router.get(
 );
 
 router.use('/api/v1/auth', authRouter);
+router.use('/api/v1/jobs', jobRouter);

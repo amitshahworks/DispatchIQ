@@ -29,3 +29,18 @@
 - Seeded a development API key.
 - Configured Prisma seed execution through `prisma.config.ts`.
 - Verified repeatable seeding, schema validation, linting, formatting, and automated tests.
+
+## Phase 5A — API Foundation
+
+- Initialized the Express API application and server entry point.
+- Added centralized environment configuration with runtime validation.
+- Configured Helmet, CORS, JSON parsing, URL-encoded parsing, and HTTP request logging.
+- Added root service information (`GET /`) and database health (`GET /health`) endpoints.
+- Added centralized error handling for operational errors, malformed JSON requests, and unexpected server errors.
+- Added standardized 404 handling for unknown routes.
+- Implemented asynchronous route handler wrapper and reusable application error utilities.
+- Integrated the shared Prisma database package for database connectivity and health checks.
+- Added graceful shutdown handling for `SIGINT` and `SIGTERM`.
+- Added unit tests for environment configuration, application errors, and asynchronous handlers.
+- Added integration tests for API routes, health checks, malformed requests, and unknown routes.
+- Verified API startup, PostgreSQL connectivity, formatting, linting, Prisma schema validation, and 27 automated tests.
