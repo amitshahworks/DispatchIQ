@@ -124,32 +124,23 @@ All notable changes to this project are documented here.
 
 ---
 
-# Current Project Status
+## Phase 8 — API Keys & Unified Authentication
 
-## Completed
+- Implemented secure API key management for programmatic clients.
+- Added cryptographically secure API key generation.
+- Added SHA-256 hashing for API key persistence.
+- Added API key creation endpoint.
+- Added API key listing endpoint.
+- Added API key revocation endpoint.
+- Added API key repository, service, controller, routes, and validation layers.
+- Added API key authentication middleware using the `X-API-Key` header.
+- Added unified authentication middleware supporting both JWT and API key authentication.
+- Enabled API key authentication for authenticated job submission.
+- Preserved JWT-only access for job inspection and lifecycle-management endpoints.
+- Added transactional API key last-used timestamp tracking.
+- Added comprehensive unit tests covering API key lifecycle, middleware, repositories, services, controllers, routing, validation, and unified authentication.
+- Added end-to-end integration tests validating complete machine-to-machine execution from API key authentication through PostgreSQL persistence and distributed worker completion.
+- Verified formatting, linting, 560 automated unit tests, 2 end-to-end integration tests, and Prisma schema validation.
 
-- Repository foundation
-- Database architecture
-- Development seed data
-- API foundation
-- Authentication & authorization
-- Job Management API
-- Distributed worker runtime
-- Worker heartbeat monitoring
-- Worker recovery system
-- Retry and dead-letter handling
-- End-to-end execution pipeline
-- Comprehensive automated testing
+---
 
-## Current Quality Metrics
-
-- 395 automated unit tests
-- End-to-end integration test suite
-- Prisma schema validation
-- ESLint compliant
-- Prettier formatted
-- PostgreSQL-backed execution engine
-- Production-style layered architecture
-- Transaction-safe job execution
-- Distributed worker coordination
-- Fault-tolerant worker recovery

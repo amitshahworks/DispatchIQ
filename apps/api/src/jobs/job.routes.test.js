@@ -1,18 +1,30 @@
 /**
  * @file job.routes.test.js
  * @description Integration-style tests for DispatchIQ job routing,
- * authentication, validation, middleware ordering, and controller delegation.
+ * authentication policy, validation, middleware ordering, and controller
+ * delegation.
+ *
+ * Job creation supports unified authentication so both JWT clients and
+ * API-key clients can submit jobs. Read and lifecycle-management routes remain
+ * JWT-only. Authentication middleware and controllers are mocked while the
+ * real validation middleware and Zod schemas remain active.
  */
 
 import express from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const authenticateAnyMock = vi.fn();
 const authenticateMock = vi.fn();
+
 const createJobControllerMock = vi.fn();
 const listJobsControllerMock = vi.fn();
 const getJobControllerMock = vi.fn();
 const cancelJobControllerMock = vi.fn();
+
+vi.mock('../middleware/authenticate-any.js', () => ({
+  authenticateAny: authenticateAnyMock,
+}));
 
 vi.mock('../middleware/authenticate.js', () => ({
   authenticate: authenticateMock,
@@ -52,17 +64,34 @@ function createTestApp() {
   return app;
 }
 
+/**
+ * Attaches the standard authenticated user used by route tests.
+ *
+ * Both JWT and API-key authentication resolve the same downstream user
+ * contract, so controllers remain independent of credential type.
+ *
+ * @param {import('express').Request} req Express request.
+ * @returns {void}
+ */
+function attachAuthenticatedUser(req) {
+  req.user = {
+    id: 'user-123',
+    email: 'amit@example.com',
+    role: 'USER',
+  };
+}
+
 describe('job routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    authenticateMock.mockImplementation((req, _res, next) => {
-      req.user = {
-        id: 'user-123',
-        email: 'amit@example.com',
-        role: 'USER',
-      };
+    authenticateAnyMock.mockImplementation((req, _res, next) => {
+      attachAuthenticatedUser(req);
+      next();
+    });
 
+    authenticateMock.mockImplementation((req, _res, next) => {
+      attachAuthenticatedUser(req);
       next();
     });
 
@@ -103,8 +132,8 @@ describe('job routes', () => {
     );
   });
 
-  describe('authentication', () => {
-    it('runs authentication before creating a job', async () => {
+  describe('authentication policy', () => {
+    it('uses unified authentication for job creation', async () => {
       const response = await request(createTestApp())
         .post('/jobs')
         .send({
@@ -115,7 +144,10 @@ describe('job routes', () => {
         });
 
       expect(response.status).toBe(201);
-      expect(authenticateMock).toHaveBeenCalledOnce();
+
+      expect(authenticateAnyMock).toHaveBeenCalledOnce();
+      expect(authenticateMock).not.toHaveBeenCalled();
+
       expect(createJobControllerMock).toHaveBeenCalledOnce();
 
       const controllerRequest = createJobControllerMock.mock.calls[0][0];
@@ -127,7 +159,72 @@ describe('job routes', () => {
       });
     });
 
-    it('prevents the controller from running when authentication fails', async () => {
+    it('prevents job creation when unified authentication fails', async () => {
+      authenticateAnyMock.mockImplementation((_req, _res, next) => {
+        const error = Object.assign(new Error('Authentication is required.'), {
+          statusCode: 401,
+          code: 'AUTHENTICATION_REQUIRED',
+        });
+
+        next(error);
+      });
+
+      const response = await request(createTestApp())
+        .post('/jobs')
+        .send({
+          type: 'EMAIL',
+          payload: {
+            to: 'amit@example.com',
+          },
+        });
+
+      expect(response.status).toBe(401);
+
+      expect(response.body).toMatchObject({
+        success: false,
+        error: {
+          code: 'AUTHENTICATION_REQUIRED',
+        },
+      });
+
+      expect(createJobControllerMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps job listing JWT-only', async () => {
+      const response = await request(createTestApp()).get('/jobs');
+
+      expect(response.status).toBe(200);
+
+      expect(authenticateMock).toHaveBeenCalledOnce();
+      expect(authenticateAnyMock).not.toHaveBeenCalled();
+      expect(listJobsControllerMock).toHaveBeenCalledOnce();
+    });
+
+    it('keeps job detail retrieval JWT-only', async () => {
+      const jobId = '123e4567-e89b-12d3-a456-426614174000';
+
+      const response = await request(createTestApp()).get(`/jobs/${jobId}`);
+
+      expect(response.status).toBe(200);
+
+      expect(authenticateMock).toHaveBeenCalledOnce();
+      expect(authenticateAnyMock).not.toHaveBeenCalled();
+      expect(getJobControllerMock).toHaveBeenCalledOnce();
+    });
+
+    it('keeps job cancellation JWT-only', async () => {
+      const jobId = '123e4567-e89b-12d3-a456-426614174000';
+
+      const response = await request(createTestApp()).post(`/jobs/${jobId}/cancel`);
+
+      expect(response.status).toBe(200);
+
+      expect(authenticateMock).toHaveBeenCalledOnce();
+      expect(authenticateAnyMock).not.toHaveBeenCalled();
+      expect(cancelJobControllerMock).toHaveBeenCalledOnce();
+    });
+
+    it('prevents JWT-only routes from running when JWT authentication fails', async () => {
       authenticateMock.mockImplementation((_req, _res, next) => {
         const error = Object.assign(new Error('Authentication is required.'), {
           statusCode: 401,
@@ -153,6 +250,40 @@ describe('job routes', () => {
   });
 
   describe('POST /jobs', () => {
+    it('runs unified authentication before validation and controller execution', async () => {
+      const executionOrder = [];
+
+      authenticateAnyMock.mockImplementation((req, _res, next) => {
+        executionOrder.push('authenticate');
+
+        attachAuthenticatedUser(req);
+
+        next();
+      });
+
+      createJobControllerMock.mockImplementation((_req, res) => {
+        executionOrder.push('controller');
+
+        return res.status(201).json({
+          success: true,
+          data: {},
+        });
+      });
+
+      const response = await request(createTestApp())
+        .post('/jobs')
+        .send({
+          type: 'EMAIL',
+          payload: {
+            to: 'amit@example.com',
+          },
+        });
+
+      expect(response.status).toBe(201);
+
+      expect(executionOrder).toEqual(['authenticate', 'controller']);
+    });
+
     it('validates, normalizes, and delegates job creation', async () => {
       const response = await request(createTestApp())
         .post('/jobs')
@@ -195,11 +326,12 @@ describe('job routes', () => {
         },
       });
 
+      expect(authenticateAnyMock).toHaveBeenCalledOnce();
       expect(createJobControllerMock).not.toHaveBeenCalled();
     });
 
     it('strips server-controlled fields from job creation input', async () => {
-      await request(createTestApp())
+      const response = await request(createTestApp())
         .post('/jobs')
         .send({
           type: 'WEBHOOK',
@@ -211,6 +343,8 @@ describe('job routes', () => {
           lockedByWorkerId: 'worker-123',
         });
 
+      expect(response.status).toBe(201);
+
       const controllerRequest = createJobControllerMock.mock.calls[0][0];
 
       expect(controllerRequest.body).toEqual({
@@ -220,6 +354,48 @@ describe('job routes', () => {
           url: 'https://example.com/webhook',
         },
         maxAttempts: 3,
+      });
+    });
+
+    it('preserves the authenticated user for API-key-style job submission', async () => {
+      authenticateAnyMock.mockImplementation((req, _res, next) => {
+        req.user = {
+          id: 'api-user-456',
+          email: 'service@dispatchiq.dev',
+          role: 'USER',
+        };
+
+        req.apiKey = {
+          id: 'key-123',
+          name: 'Production integration',
+        };
+
+        next();
+      });
+
+      const response = await request(createTestApp())
+        .post('/jobs')
+        .set('X-API-Key', 'diq_live_abcdefghijklmnopqrstuvwxyzABCDEFGH123456789')
+        .send({
+          type: 'WEBHOOK',
+          payload: {
+            url: 'https://example.com/webhook',
+          },
+        });
+
+      expect(response.status).toBe(201);
+
+      const controllerRequest = createJobControllerMock.mock.calls[0][0];
+
+      expect(controllerRequest.user).toEqual({
+        id: 'api-user-456',
+        email: 'service@dispatchiq.dev',
+        role: 'USER',
+      });
+
+      expect(controllerRequest.apiKey).toEqual({
+        id: 'key-123',
+        name: 'Production integration',
       });
     });
   });

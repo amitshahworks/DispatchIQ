@@ -10,12 +10,17 @@ import { checkDatabaseHealth } from '@dispatchiq/database';
 import { HTTP_STATUS } from '@dispatchiq/shared';
 import { Router } from 'express';
 
+import { apiKeyRouter } from '../api-keys/api-key.routes.js';
 import { authRouter } from '../auth/auth.routes.js';
 import { jobRouter } from '../jobs/job.routes.js';
+import { metricsRouter } from '../metrics/metrics.routes.js';
 import { asyncHandler } from '../utils/async-handler.js';
 
 export const router = Router();
 
+/**
+ * Returns basic service metadata.
+ */
 router.get('/', (_req, res) => {
   return res.status(HTTP_STATUS.OK).json({
     success: true,
@@ -27,6 +32,9 @@ router.get('/', (_req, res) => {
   });
 });
 
+/**
+ * Returns API and database health information.
+ */
 router.get(
   '/health',
   asyncHandler(async (_req, res) => {
@@ -52,5 +60,14 @@ router.get(
   }),
 );
 
+/*
+ * Versioned API domains.
+ *
+ * Authentication and API-key management remain separate because JWT sessions
+ * are intended for interactive users while API keys are intended for
+ * programmatic clients.
+ */
 router.use('/api/v1/auth', authRouter);
 router.use('/api/v1/jobs', jobRouter);
+router.use('/api/v1/metrics', metricsRouter);
+router.use('/api/v1/api-keys', apiKeyRouter);
