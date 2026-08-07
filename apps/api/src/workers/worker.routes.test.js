@@ -123,7 +123,6 @@ describe('worker routes', () => {
   });
 
   describe('security policy', () => {
-
     it('runs JWT authentication before worker listing', async () => {
       const response = await request(createTestApp()).get('/workers');
 
