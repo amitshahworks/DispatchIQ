@@ -24,6 +24,12 @@ const processRemoveListenerMock = vi.fn();
 const loggerInfoMock = vi.fn();
 const loggerErrorMock = vi.fn();
 
+const recoveryServiceFactoryMock = vi.fn();
+const recoverAllWorkersMock = vi.fn();
+
+const recoverySchedulerFactoryMock = vi.fn();
+const recoverySchedulerStopMock = vi.fn();
+
 const { createWorkerProcess, readWorkerConfig } = await import('./worker.js');
 
 const workerConfig = Object.freeze({
@@ -32,6 +38,9 @@ const workerConfig = Object.freeze({
   heartbeatIntervalMs: 10_000,
   retryBaseDelayMs: 2_000,
   retryMaxDelayMs: 60_000,
+  recoveryIntervalMs: 15_000,
+  staleAfterMs: 30_000,
+  recoveryBatchLimit: 100,
 });
 
 /**
@@ -48,6 +57,8 @@ function createTestWorkerProcess(overrides = {}) {
     },
     runtimeFactory: runtimeFactoryMock,
     processorFactory: processorFactoryMock,
+    recoveryServiceFactory: recoveryServiceFactoryMock,
+    recoverySchedulerFactory: recoverySchedulerFactoryMock,
     databaseClient: {
       $disconnect: disconnectMock,
     },
@@ -87,6 +98,29 @@ describe('worker process entrypoint', () => {
     processorFactoryMock.mockReturnValue(processClaimMock);
     processClaimMock.mockResolvedValue(undefined);
     disconnectMock.mockResolvedValue(undefined);
+
+    recoverAllWorkersMock.mockResolvedValue({
+      workersRecovered: 0,
+      jobsRecovered: 0,
+      jobsRetried: 0,
+      jobsDeadLettered: 0,
+      failures: [],
+    });
+
+    recoveryServiceFactoryMock.mockReturnValue({
+      findStaleWorkers: vi.fn(),
+      recoverWorker: vi.fn(),
+      recoverAllWorkers: recoverAllWorkersMock,
+    });
+
+    recoverySchedulerStopMock.mockResolvedValue(undefined);
+
+    recoverySchedulerFactoryMock.mockReturnValue({
+      runNow: vi.fn(),
+      stop: recoverySchedulerStopMock,
+      isRunning: vi.fn(() => true),
+      isRecovering: vi.fn(() => false),
+    });
   });
 
   it('builds and starts the runtime before creating the job processor', async () => {
@@ -200,12 +234,20 @@ describe('worker process entrypoint', () => {
   });
 
   it('shares one shutdown operation across repeated calls', async () => {
-    let resolveRuntimeStop;
+    let resolveRecovery;
+    let resolveRuntime;
+
+    recoverySchedulerStopMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRecovery = resolve;
+        }),
+    );
 
     runtimeStopMock.mockImplementation(
       () =>
         new Promise((resolve) => {
-          resolveRuntimeStop = resolve;
+          resolveRuntime = resolve;
         }),
     );
 
@@ -214,17 +256,23 @@ describe('worker process entrypoint', () => {
     await workerProcess.start();
 
     const firstShutdown = workerProcess.shutdown('SIGINT');
-
     const secondShutdown = workerProcess.shutdown('SIGTERM');
 
     expect(firstShutdown).toBe(secondShutdown);
-    expect(runtimeStopMock).toHaveBeenCalledOnce();
 
-    resolveRuntimeStop();
+    expect(recoverySchedulerStopMock).toHaveBeenCalledTimes(1);
+
+    resolveRecovery();
+
+    await Promise.resolve();
+
+    expect(runtimeStopMock).toHaveBeenCalledTimes(1);
+
+    resolveRuntime();
 
     await firstShutdown;
 
-    expect(disconnectMock).toHaveBeenCalledOnce();
+    expect(disconnectMock).toHaveBeenCalledTimes(1);
   });
 
   it('disconnects the database even when runtime shutdown fails', async () => {
@@ -264,6 +312,115 @@ describe('worker process entrypoint', () => {
     expect(workerProcess.getRuntime()).toBeNull();
     expect(workerProcess.isStarted()).toBe(false);
   });
+
+  it('configures and starts stale-worker recovery after worker registration', async () => {
+    const workerProcess = createTestWorkerProcess();
+
+    await workerProcess.start();
+
+    expect(recoveryServiceFactoryMock).toHaveBeenCalledOnce();
+
+    expect(recoveryServiceFactoryMock).toHaveBeenCalledWith({
+      staleAfterMs: 30_000,
+      retryBaseDelayMs: 2_000,
+      retryMaxDelayMs: 60_000,
+      staleWorkerLimit: 100,
+    });
+
+    expect(recoverySchedulerFactoryMock).toHaveBeenCalledOnce();
+
+    expect(recoverySchedulerFactoryMock).toHaveBeenCalledWith({
+      intervalMs: 15_000,
+      recoverAllWorkers: recoverAllWorkersMock,
+      onError: expect.any(Function),
+      onRecovery: expect.any(Function),
+    });
+
+    expect(workerProcess.getRecoveryScheduler()).not.toBeNull();
+  });
+
+  it('stops recovery before stopping the worker runtime', async () => {
+    const shutdownOrder = [];
+
+    recoverySchedulerStopMock.mockImplementation(async () => {
+      shutdownOrder.push('recovery');
+    });
+
+    runtimeStopMock.mockImplementation(async () => {
+      shutdownOrder.push('runtime');
+    });
+
+    disconnectMock.mockImplementation(async () => {
+      shutdownOrder.push('database');
+    });
+
+    const workerProcess = createTestWorkerProcess();
+
+    await workerProcess.start();
+    await workerProcess.shutdown('SIGTERM');
+
+    expect(shutdownOrder).toEqual(['recovery', 'runtime', 'database']);
+  });
+
+  it('reports meaningful recovery summaries', async () => {
+    const workerProcess = createTestWorkerProcess();
+
+    await workerProcess.start();
+
+    const schedulerOptions = recoverySchedulerFactoryMock.mock.calls[0][0];
+
+    schedulerOptions.onRecovery({
+      workersRecovered: 2,
+      jobsRecovered: 3,
+      jobsRetried: 2,
+      jobsDeadLettered: 1,
+      failures: [],
+    });
+
+    expect(loggerInfoMock).toHaveBeenCalledWith(
+      '[DispatchIQ Worker] Recovery cycle completed: 2 worker(s), 3 job(s), 0 failure(s).',
+    );
+  });
+
+  it('keeps empty recovery cycles silent', async () => {
+    const workerProcess = createTestWorkerProcess();
+
+    await workerProcess.start();
+
+    loggerInfoMock.mockClear();
+
+    const schedulerOptions = recoverySchedulerFactoryMock.mock.calls[0][0];
+
+    schedulerOptions.onRecovery({
+      workersRecovered: 0,
+      jobsRecovered: 0,
+      jobsRetried: 0,
+      jobsDeadLettered: 0,
+      failures: [],
+    });
+
+    expect(loggerInfoMock).not.toHaveBeenCalled();
+  });
+
+  it('rolls back the runtime when recovery scheduler startup fails', async () => {
+    recoverySchedulerFactoryMock.mockImplementation(() => {
+      throw new Error('Recovery scheduler initialization failed.');
+    });
+
+    const workerProcess = createTestWorkerProcess();
+
+    await expect(workerProcess.start()).rejects.toThrow(
+      'Recovery scheduler initialization failed.',
+    );
+
+    expect(runtimeStopMock).toHaveBeenCalledOnce();
+
+    expect(workerProcess.isStarted()).toBe(false);
+
+    expect(workerProcess.getRuntime()).toBeNull();
+
+    expect(workerProcess.getRecoveryScheduler()).toBeNull();
+  });
 });
 
 describe('worker configuration', () => {
@@ -274,6 +431,9 @@ describe('worker configuration', () => {
       heartbeatIntervalMs: 10_000,
       retryBaseDelayMs: 1_000,
       retryMaxDelayMs: 300_000,
+      recoveryIntervalMs: 15_000,
+      staleAfterMs: 30_000,
+      recoveryBatchLimit: 100,
     });
   });
 
@@ -286,6 +446,9 @@ describe('worker configuration', () => {
           WORKER_HEARTBEAT_INTERVAL_MS: '15000',
           WORKER_RETRY_BASE_DELAY_MS: '3000',
           WORKER_RETRY_MAX_DELAY_MS: '120000',
+          WORKER_RECOVERY_INTERVAL_MS: '15000',
+          WORKER_STALE_AFTER_MS: '30000',
+          WORKER_RECOVERY_BATCH_LIMIT: '100',
         },
         'fallback-host',
       ),
@@ -295,6 +458,9 @@ describe('worker configuration', () => {
       heartbeatIntervalMs: 15_000,
       retryBaseDelayMs: 3_000,
       retryMaxDelayMs: 120_000,
+      recoveryIntervalMs: 15_000,
+      staleAfterMs: 30_000,
+      recoveryBatchLimit: 100,
     });
   });
 
@@ -328,5 +494,17 @@ describe('worker configuration', () => {
 
   it('rejects an empty resolved hostname', () => {
     expect(() => readWorkerConfig({}, '   ')).toThrow('Worker hostname cannot be empty.');
+  });
+
+  it('rejects a stale threshold that does not exceed the heartbeat interval', () => {
+    expect(() =>
+      readWorkerConfig(
+        {
+          WORKER_HEARTBEAT_INTERVAL_MS: '10000',
+          WORKER_STALE_AFTER_MS: '10000',
+        },
+        'worker-host',
+      ),
+    ).toThrow('WORKER_STALE_AFTER_MS must be greater than WORKER_HEARTBEAT_INTERVAL_MS.');
   });
 });

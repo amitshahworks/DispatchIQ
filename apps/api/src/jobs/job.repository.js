@@ -57,9 +57,7 @@ export function createJob({
         create: [
           {
             level: 'INFO',
-            event: isScheduled
-              ? 'JOB_SCHEDULED'
-              : 'JOB_QUEUED',
+            event: isScheduled ? 'JOB_SCHEDULED' : 'JOB_QUEUED',
             message: isScheduled
               ? 'Job scheduled for future execution.'
               : 'Job queued for worker execution.',

@@ -65,44 +65,44 @@ describe('job repository', () => {
         id: 'job-123',
         ...data,
         logs: [
-            {
+          {
             id: 'log-123',
             level: 'INFO',
             event: 'JOB_SCHEDULED',
             message: 'Job scheduled for future execution.',
             metadata: {
-                status: 'SCHEDULED',
-                availableAt: availableAt.toISOString(),
+              status: 'SCHEDULED',
+              availableAt: availableAt.toISOString(),
             },
-            },
+          },
         ],
-        };
+      };
 
       jobCreateMock.mockResolvedValue(createdJob);
 
       const result = await createJob(data);
 
       expect(jobCreateMock).toHaveBeenCalledWith({
-            data: {
-                ...data,
-                logs: {
-                create: [
-                    {
-                    level: 'INFO',
-                    event: 'JOB_SCHEDULED',
-                    message: 'Job scheduled for future execution.',
-                    metadata: {
-                        status: 'SCHEDULED',
-                        availableAt: availableAt.toISOString(),
-                    },
-                    },
-                ],
+        data: {
+          ...data,
+          logs: {
+            create: [
+              {
+                level: 'INFO',
+                event: 'JOB_SCHEDULED',
+                message: 'Job scheduled for future execution.',
+                metadata: {
+                  status: 'SCHEDULED',
+                  availableAt: availableAt.toISOString(),
                 },
-            },
-            include: {
-                logs: true,
-            },
-        });
+              },
+            ],
+          },
+        },
+        include: {
+          logs: true,
+        },
+      });
 
       expect(result).toEqual(createdJob);
     });
@@ -127,35 +127,35 @@ describe('job repository', () => {
       });
 
       expect(jobCreateMock).toHaveBeenCalledWith({
-            data: {
-                userId: 'user-123',
-                type: 'WEBHOOK',
-                status: 'QUEUED',
-                priority: 'MEDIUM',
-                payload: {
-                url: 'https://example.com/webhook',
+        data: {
+          userId: 'user-123',
+          type: 'WEBHOOK',
+          status: 'QUEUED',
+          priority: 'MEDIUM',
+          payload: {
+            url: 'https://example.com/webhook',
+          },
+          idempotencyKey: undefined,
+          maxAttempts: 3,
+          availableAt,
+          logs: {
+            create: [
+              {
+                level: 'INFO',
+                event: 'JOB_QUEUED',
+                message: 'Job queued for worker execution.',
+                metadata: {
+                  status: 'QUEUED',
+                  availableAt: availableAt.toISOString(),
                 },
-                idempotencyKey: undefined,
-                maxAttempts: 3,
-                availableAt,
-                logs: {
-                create: [
-                    {
-                    level: 'INFO',
-                    event: 'JOB_QUEUED',
-                    message: 'Job queued for worker execution.',
-                    metadata: {
-                        status: 'QUEUED',
-                        availableAt: availableAt.toISOString(),
-                    },
-                    },
-                ],
-                },
-            },
-            include: {
-                logs: true,
-            },
-        });
+              },
+            ],
+          },
+        },
+        include: {
+          logs: true,
+        },
+      });
     });
   });
 

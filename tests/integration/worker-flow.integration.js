@@ -90,14 +90,19 @@ describe('API to PostgreSQL to worker integration', () => {
         heartbeatIntervalMs: 60_000,
         retryBaseDelayMs: 10,
         retryMaxDelayMs: 100,
+
+        /*
+         * Recovery remains enabled during integration testing, but the intervals
+         * are intentionally long so background recovery cannot interfere with the
+         * deterministic single-job execution exercised by this suite.
+         */
+        recoveryIntervalMs: 120_000,
+        staleAfterMs: 180_000,
+        recoveryBatchLimit: 100,
       },
       processRef: createProcessAdapter(),
       logger: silentLogger,
 
-      /*
-       * The shared Prisma client remains connected until suite cleanup.
-       * Worker shutdown therefore receives a no-op database disconnector.
-       */
       databaseClient: {
         async $disconnect() {},
       },

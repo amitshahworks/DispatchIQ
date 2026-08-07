@@ -1,3 +1,9 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+---
+
 ## Phase 1 — Repository Foundation
 
 - Initialized the DispatchIQ monorepo.
@@ -8,7 +14,9 @@
 - Added reusable Zod schemas.
 - Configured Dockerized PostgreSQL.
 - Configured Prisma ORM 7 with the PostgreSQL driver adapter.
-- Verified linting, formatting, tests, PostgreSQL readiness, and Prisma Client generation.
+- Verified linting, formatting, automated tests, PostgreSQL readiness, and Prisma Client generation.
+
+---
 
 ## Phase 2 — Database Schema & Migration
 
@@ -19,6 +27,8 @@
 - Applied the initial database migration.
 - Verified Prisma schema validation, client generation, database migration, and PostgreSQL connectivity.
 
+---
+
 ## Phase 3 — Development Seed Data
 
 - Added a repeatable development database seed.
@@ -28,19 +38,118 @@
 - Seeded execution attempts and structured lifecycle logs for realistic development and testing.
 - Seeded a development API key.
 - Configured Prisma seed execution through `prisma.config.ts`.
-- Verified repeatable seeding, schema validation, linting, formatting, and automated tests.
+- Verified repeatable seeding, schema validation, formatting, linting, and automated tests.
 
-## Phase 5A — API Foundation
+---
+
+## Phase 4 — API Foundation
 
 - Initialized the Express API application and server entry point.
-- Added centralized environment configuration with runtime validation.
-- Configured Helmet, CORS, JSON parsing, URL-encoded parsing, and HTTP request logging.
-- Added root service information (`GET /`) and database health (`GET /health`) endpoints.
-- Added centralized error handling for operational errors, malformed JSON requests, and unexpected server errors.
+- Configured centralized environment management with runtime validation.
+- Added Helmet, CORS, JSON parsing, URL-encoded parsing, and HTTP request logging.
+- Implemented root service information (`GET /`) and database health (`GET /health`) endpoints.
+- Added centralized error handling for operational errors, malformed JSON requests, and unexpected server failures.
 - Added standardized 404 handling for unknown routes.
-- Implemented asynchronous route handler wrapper and reusable application error utilities.
-- Integrated the shared Prisma database package for database connectivity and health checks.
+- Implemented reusable asynchronous route handlers and application error utilities.
+- Integrated the shared Prisma database package for connectivity and health checks.
 - Added graceful shutdown handling for `SIGINT` and `SIGTERM`.
-- Added unit tests for environment configuration, application errors, and asynchronous handlers.
-- Added integration tests for API routes, health checks, malformed requests, and unknown routes.
-- Verified API startup, PostgreSQL connectivity, formatting, linting, Prisma schema validation, and 27 automated tests.
+- Added unit tests for environment configuration and shared utilities.
+- Added API integration tests covering health checks, malformed requests, and unknown routes.
+- Verified API startup, PostgreSQL connectivity, formatting, linting, Prisma schema validation, and automated tests.
+
+---
+
+## Phase 5 — Authentication & Authorization
+
+- Designed the authentication architecture for API clients.
+- Implemented secure JWT access-token authentication.
+- Added refresh token rotation with persistent server-side session management.
+- Added secure password hashing and verification using bcrypt.
+- Implemented user registration, login, token refresh, and logout endpoints.
+- Added authentication middleware for protected endpoints.
+- Implemented role-based authorization middleware.
+- Added centralized request validation using Zod.
+- Implemented authentication services following the Controller → Service → Repository architecture.
+- Added repositories for user authentication and refresh-token persistence.
+- Added comprehensive unit tests covering authentication flows, authorization, validation, controllers, services, middleware, password utilities, and token management.
+- Verified authentication workflows, formatting, linting, automated tests, and Prisma schema validation.
+
+---
+
+## Phase 6 — Job Management API
+
+- Designed the Job Management module following a layered architecture (Controller → Service → Repository).
+- Implemented authenticated job creation.
+- Added transactional job creation with lifecycle audit logging.
+- Implemented user-scoped idempotent job creation using idempotency keys.
+- Added paginated job listing with filtering by status and job type.
+- Added job detail endpoints including execution attempts and lifecycle logs.
+- Implemented lifecycle-aware job cancellation.
+- Added comprehensive request validation using Zod.
+- Added transactional repository operations for job persistence.
+- Implemented ownership validation for all job operations.
+- Added standardized API response contracts.
+- Added comprehensive unit tests covering controllers, services, repositories, routes, and validation.
+- Verified formatting, linting, automated tests, and Prisma schema validation.
+
+---
+
+## Phase 7 — Distributed Worker Runtime
+
+- Implemented a production-style distributed worker runtime.
+- Added PostgreSQL-based job claiming using `FOR UPDATE SKIP LOCKED`.
+- Implemented transactional worker ownership locking to prevent duplicate job execution.
+- Added transactional job state transitions.
+- Added centralized job processor with a pluggable handler registry.
+- Implemented EMAIL, WEBHOOK, and REPORT_GENERATION job handlers.
+- Added worker registration and lifecycle management.
+- Implemented worker heartbeat scheduling with overlap protection.
+- Added configurable worker polling and heartbeat intervals.
+- Implemented graceful worker startup and shutdown lifecycle.
+- Added graceful shutdown that waits for active job completion before exiting.
+- Implemented retry scheduling using exponential backoff.
+- Added automatic dead-letter queue transitions after retry exhaustion.
+- Added transactional execution-attempt tracking.
+- Added structured lifecycle logging throughout job processing.
+- Added structured execution metrics for every processing attempt.
+- Implemented automatic stale-worker detection.
+- Added configurable stale-worker recovery scheduling.
+- Implemented deterministic recovery of abandoned processing jobs after worker crashes.
+- Added worker recovery repository and service layers.
+- Added runtime orchestration for polling, heartbeat, recovery, and graceful shutdown.
+- Added standalone worker runtime entry point.
+- Added comprehensive unit tests covering runtime orchestration, processors, handlers, repositories, services, recovery, scheduling, and worker lifecycle.
+- Added end-to-end integration tests validating the complete execution pipeline from authenticated API request through PostgreSQL persistence, worker execution, and successful job completion.
+- Verified formatting, linting, Prisma schema validation, **395 automated unit tests**, and end-to-end integration testing.
+
+---
+
+# Current Project Status
+
+## Completed
+
+- Repository foundation
+- Database architecture
+- Development seed data
+- API foundation
+- Authentication & authorization
+- Job Management API
+- Distributed worker runtime
+- Worker heartbeat monitoring
+- Worker recovery system
+- Retry and dead-letter handling
+- End-to-end execution pipeline
+- Comprehensive automated testing
+
+## Current Quality Metrics
+
+- 395 automated unit tests
+- End-to-end integration test suite
+- Prisma schema validation
+- ESLint compliant
+- Prettier formatted
+- PostgreSQL-backed execution engine
+- Production-style layered architecture
+- Transaction-safe job execution
+- Distributed worker coordination
+- Fault-tolerant worker recovery

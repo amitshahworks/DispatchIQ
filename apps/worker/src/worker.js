@@ -3,10 +3,12 @@
  * @description Production entrypoint and process-level coordinator for the
  * DispatchIQ background worker.
  *
- * This module connects the handler registry, claimed-job processor, worker
- * runtime, operating-system signals, and Prisma shutdown. Runtime construction
- * is dependency-injected so process behavior can be tested without starting
- * real timers or connecting to PostgreSQL.
+ * This module connects worker registration, job handlers, job processing,
+ * heartbeat persistence, stale-worker recovery, operating-system signals, and
+ * Prisma shutdown into one deterministic worker-process lifecycle.
+ *
+ * Runtime components remain dependency-injected so startup and shutdown
+ * behavior can be unit tested without real timers or PostgreSQL connections.
  */
 
 import os from 'node:os';
@@ -17,18 +19,22 @@ import { prisma } from '@dispatchiq/database';
 
 import { jobHandlers } from './handlers/index.js';
 import { createJobProcessor } from './jobs/job-processor.js';
+import { startRecoveryScheduler } from './recovery/recovery-scheduler.js';
+import { createStaleWorkerRecoveryService } from './recovery/stale-worker.service.js';
 import { createWorkerRuntime } from './runtime/worker-runtime.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
+
 const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_RETRY_MAX_DELAY_MS = 5 * 60 * 1_000;
 
+const DEFAULT_RECOVERY_INTERVAL_MS = 15_000;
+const DEFAULT_STALE_AFTER_MS = 30_000;
+const DEFAULT_RECOVERY_BATCH_LIMIT = 100;
+
 /**
  * Writes an informational worker message to standard output.
- *
- * A small logger abstraction keeps process coordination independent from a
- * specific logging library and can later be replaced with structured logging.
  *
  * @param {string} message Log message.
  * @returns {void}
@@ -38,7 +44,7 @@ function writeInfo(message) {
 }
 
 /**
- * Writes a worker error to standard error.
+ * Writes a worker error message to standard error.
  *
  * @param {string} message Error message.
  * @returns {void}
@@ -48,7 +54,7 @@ function writeError(message) {
 }
 
 /**
- * Default worker logger.
+ * Default process logger.
  */
 const defaultLogger = Object.freeze({
   info: writeInfo,
@@ -59,10 +65,10 @@ const defaultLogger = Object.freeze({
  * Parses a positive integer environment value.
  *
  * @param {string | undefined} rawValue Raw environment value.
- * @param {number} fallback Fallback used when the value is missing.
+ * @param {number} fallback Fallback value when configuration is omitted.
  * @param {string} variableName Environment variable name.
- * @returns {number} Parsed positive integer.
- * @throws {Error} When the supplied value is not a positive integer.
+ * @returns {number} Validated positive integer.
+ * @throws {Error} When the supplied value is invalid.
  */
 function parsePositiveInteger(rawValue, fallback, variableName) {
   if (rawValue === undefined || rawValue.trim() === '') {
@@ -79,7 +85,11 @@ function parsePositiveInteger(rawValue, fallback, variableName) {
 }
 
 /**
- * Reads and validates worker runtime configuration.
+ * Reads and validates DispatchIQ worker-process configuration.
+ *
+ * Recovery and heartbeat timings are validated together because the stale
+ * threshold must exceed the normal heartbeat interval. Otherwise a healthy
+ * worker could be incorrectly classified as stale between heartbeats.
  *
  * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [source=process.env]
  * Environment source.
@@ -89,9 +99,11 @@ function parsePositiveInteger(rawValue, fallback, variableName) {
  *   pollIntervalMs: number,
  *   heartbeatIntervalMs: number,
  *   retryBaseDelayMs: number,
- *   retryMaxDelayMs: number
+ *   retryMaxDelayMs: number,
+ *   recoveryIntervalMs: number,
+ *   staleAfterMs: number,
+ *   recoveryBatchLimit: number
  * }>} Immutable worker configuration.
- * @throws {Error} When configuration is invalid.
  */
 export function readWorkerConfig(source = process.env, defaultHostname = os.hostname()) {
   const hostname = source.WORKER_HOSTNAME?.trim() || defaultHostname.trim();
@@ -124,8 +136,30 @@ export function readWorkerConfig(source = process.env, defaultHostname = os.host
     'WORKER_RETRY_MAX_DELAY_MS',
   );
 
+  const recoveryIntervalMs = parsePositiveInteger(
+    source.WORKER_RECOVERY_INTERVAL_MS,
+    DEFAULT_RECOVERY_INTERVAL_MS,
+    'WORKER_RECOVERY_INTERVAL_MS',
+  );
+
+  const staleAfterMs = parsePositiveInteger(
+    source.WORKER_STALE_AFTER_MS,
+    DEFAULT_STALE_AFTER_MS,
+    'WORKER_STALE_AFTER_MS',
+  );
+
+  const recoveryBatchLimit = parsePositiveInteger(
+    source.WORKER_RECOVERY_BATCH_LIMIT,
+    DEFAULT_RECOVERY_BATCH_LIMIT,
+    'WORKER_RECOVERY_BATCH_LIMIT',
+  );
+
   if (retryMaxDelayMs < retryBaseDelayMs) {
     throw new Error('WORKER_RETRY_MAX_DELAY_MS cannot be lower than WORKER_RETRY_BASE_DELAY_MS.');
+  }
+
+  if (staleAfterMs <= heartbeatIntervalMs) {
+    throw new Error('WORKER_STALE_AFTER_MS must be greater than WORKER_HEARTBEAT_INTERVAL_MS.');
   }
 
   return Object.freeze({
@@ -134,21 +168,24 @@ export function readWorkerConfig(source = process.env, defaultHostname = os.host
     heartbeatIntervalMs,
     retryBaseDelayMs,
     retryMaxDelayMs,
+    recoveryIntervalMs,
+    staleAfterMs,
+    recoveryBatchLimit,
   });
 }
 
 /**
- * Converts an unknown failure into a loggable message.
+ * Converts an unknown failure into a safe log message.
  *
  * @param {unknown} error Unknown failure.
- * @returns {string} Safe message.
+ * @returns {string} Loggable message.
  */
 function getErrorMessage(error) {
-  if (error instanceof Error && error.message.trim()) {
+  if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
   }
 
-  if (typeof error === 'string' && error.trim()) {
+  if (typeof error === 'string' && error.trim().length > 0) {
     return error.trim();
   }
 
@@ -156,43 +193,56 @@ function getErrorMessage(error) {
 }
 
 /**
- * Creates the DispatchIQ worker process coordinator.
+ * Creates the DispatchIQ worker-process coordinator.
  *
- * The job processor requires the persistent worker ID created during runtime
- * startup. A deferred processor function bridges that lifecycle dependency:
- * polling is configured before startup, while the concrete processor is
- * created immediately after worker registration succeeds.
+ * Startup sequence:
+ *
+ * 1. Construct the worker runtime.
+ * 2. Register and start the worker.
+ * 3. Create the worker-specific job processor.
+ * 4. Create stale-worker recovery business logic.
+ * 5. Start automatic stale-worker recovery scheduling.
+ * 6. Register graceful operating-system signal handlers.
+ *
+ * Shutdown reverses runtime ownership safely: recovery scheduling stops before
+ * worker polling/heartbeat shutdown and Prisma disconnection.
  *
  * @param {{
  *   config?: ReturnType<typeof readWorkerConfig>,
  *   handlers?: Record<string, (job: object) => Promise<unknown>>,
  *   runtimeFactory?: typeof createWorkerRuntime,
  *   processorFactory?: typeof createJobProcessor,
+ *   recoveryServiceFactory?: typeof createStaleWorkerRecoveryService,
+ *   recoverySchedulerFactory?: typeof startRecoveryScheduler,
  *   databaseClient?: { $disconnect: () => Promise<void> },
  *   processRef?: Pick<NodeJS.Process, 'once' | 'removeListener'>,
  *   logger?: {
  *     info: (message: string) => void,
  *     error: (message: string) => void
  *   }
- * }} [options] Worker process dependencies.
+ * }} [options] Worker-process dependencies.
  * @returns {{
  *   start: () => Promise<object>,
  *   shutdown: (signal?: string) => Promise<void>,
  *   getRuntime: () => ReturnType<typeof createWorkerRuntime> | null,
+ *   getRecoveryScheduler: () => ReturnType<typeof startRecoveryScheduler> | null,
  *   isStarted: () => boolean,
  *   isShuttingDown: () => boolean
- * }} Worker process controller.
+ * }} Worker-process controller.
  */
 export function createWorkerProcess({
   config = readWorkerConfig(),
   handlers = jobHandlers,
   runtimeFactory = createWorkerRuntime,
   processorFactory = createJobProcessor,
+  recoveryServiceFactory = createStaleWorkerRecoveryService,
+  recoverySchedulerFactory = startRecoveryScheduler,
   databaseClient = prisma,
   processRef = process,
   logger = defaultLogger,
 } = {}) {
   let runtime = null;
+  let recoveryScheduler = null;
   let processClaim = null;
   let worker = null;
 
@@ -202,9 +252,9 @@ export function createWorkerProcess({
   let signalHandlersRegistered = false;
 
   /**
-   * Reports a runtime error without throwing from the polling loop.
+   * Reports runtime errors without throwing back into timers.
    *
-   * @param {unknown} error Runtime error.
+   * @param {unknown} error Runtime failure.
    * @returns {void}
    */
   function reportRuntimeError(error) {
@@ -212,9 +262,38 @@ export function createWorkerProcess({
   }
 
   /**
-   * Handles a termination signal through graceful shutdown.
+   * Reports meaningful recovery activity.
    *
-   * @param {string} signal Signal name.
+   * Empty recovery scans remain silent to avoid producing repetitive logs
+   * during healthy operation.
+   *
+   * @param {{
+   *   workersRecovered?: number,
+   *   jobsRecovered?: number,
+   *   failures?: Array<object>
+   * }} summary Recovery summary.
+   * @returns {void}
+   */
+  function reportRecoverySummary(summary) {
+    const workersRecovered = summary?.workersRecovered ?? 0;
+
+    const jobsRecovered = summary?.jobsRecovered ?? 0;
+
+    const failures = summary?.failures?.length ?? 0;
+
+    if (workersRecovered === 0 && jobsRecovered === 0 && failures === 0) {
+      return;
+    }
+
+    logger.info(
+      `[DispatchIQ Worker] Recovery cycle completed: ${workersRecovered} worker(s), ${jobsRecovered} job(s), ${failures} failure(s).`,
+    );
+  }
+
+  /**
+   * Handles process termination through graceful shutdown.
+   *
+   * @param {string} signal Operating-system signal.
    * @returns {void}
    */
   function handleSignal(signal) {
@@ -248,7 +327,7 @@ export function createWorkerProcess({
   }
 
   /**
-   * Removes process signal handlers after shutdown.
+   * Removes registered process signal handlers.
    *
    * @returns {void}
    */
@@ -258,13 +337,46 @@ export function createWorkerProcess({
     }
 
     processRef.removeListener('SIGINT', sigintHandler);
+
     processRef.removeListener('SIGTERM', sigtermHandler);
 
     signalHandlersRegistered = false;
   }
 
   /**
-   * Starts the worker runtime.
+   * Best-effort cleanup when startup fails after partially initializing
+   * process resources.
+   *
+   * @returns {Promise<void>}
+   */
+  async function rollbackStartup() {
+    if (recoveryScheduler) {
+      try {
+        await recoveryScheduler.stop();
+      } catch {
+        // Preserve the original startup failure.
+      }
+    }
+
+    if (runtime) {
+      try {
+        await runtime.stop();
+      } catch {
+        // Preserve the original startup failure.
+      }
+    }
+
+    removeSignalHandlers();
+
+    recoveryScheduler = null;
+    runtime = null;
+    processClaim = null;
+    worker = null;
+    started = false;
+  }
+
+  /**
+   * Starts the complete worker process.
    *
    * @returns {Promise<object>} Registered worker instance.
    */
@@ -281,6 +393,12 @@ export function createWorkerProcess({
       hostname: config.hostname,
       pollIntervalMs: config.pollIntervalMs,
       heartbeatIntervalMs: config.heartbeatIntervalMs,
+
+      /*
+       * Runtime construction occurs before worker registration, while the job
+       * processor requires the resulting persistent worker ID. This deferred
+       * delegate bridges that startup dependency safely.
+       */
       processClaim: async (claim) => {
         if (!processClaim) {
           throw new Error('Worker job processor is not initialized.');
@@ -288,6 +406,7 @@ export function createWorkerProcess({
 
         await processClaim(claim);
       },
+
       onError: reportRuntimeError,
     });
 
@@ -301,26 +420,47 @@ export function createWorkerProcess({
         retryMaxDelayMs: config.retryMaxDelayMs,
       });
 
+      const recoveryService = recoveryServiceFactory({
+        staleAfterMs: config.staleAfterMs,
+        retryBaseDelayMs: config.retryBaseDelayMs,
+        retryMaxDelayMs: config.retryMaxDelayMs,
+        staleWorkerLimit: config.recoveryBatchLimit,
+      });
+
+      recoveryScheduler = recoverySchedulerFactory({
+        intervalMs: config.recoveryIntervalMs,
+
+        recoverAllWorkers: recoveryService.recoverAllWorkers,
+
+        onError: reportRuntimeError,
+        onRecovery: reportRecoverySummary,
+      });
+
       registerSignalHandlers();
+
       started = true;
 
       logger.info(`[DispatchIQ Worker] Online as ${worker.id} on ${config.hostname}.`);
 
       return worker;
     } catch (error) {
-      runtime = null;
-      worker = null;
-      processClaim = null;
+      await rollbackStartup();
 
       throw error;
     }
   }
 
   /**
-   * Gracefully stops runtime activity and disconnects Prisma.
+   * Gracefully shuts down the worker process.
    *
-   * Multiple shutdown requests share the same promise so concurrent signals
-   * cannot execute duplicate lifecycle transitions or database disconnections.
+   * Shutdown ordering matters:
+   *
+   * 1. Stop stale-worker recovery so no new recovery transaction starts.
+   * 2. Stop worker polling and heartbeat activity.
+   * 3. Allow runtime-owned active work to settle.
+   * 4. Disconnect Prisma only after database-using components have stopped.
+   *
+   * Concurrent shutdown requests share one promise.
    *
    * @param {string} [signal='MANUAL'] Shutdown source.
    * @returns {Promise<void>}
@@ -332,18 +472,27 @@ export function createWorkerProcess({
 
     shutdownPromise = (async () => {
       shuttingDown = true;
+
       removeSignalHandlers();
 
       logger.info(`[DispatchIQ Worker] Shutdown requested by ${signal}.`);
 
       let shutdownError = null;
 
-      try {
-        if (runtime && started) {
-          await runtime.stop();
+      if (recoveryScheduler) {
+        try {
+          await recoveryScheduler.stop();
+        } catch (error) {
+          shutdownError ??= error;
         }
-      } catch (error) {
-        shutdownError = error;
+      }
+
+      if (runtime && started) {
+        try {
+          await runtime.stop();
+        } catch (error) {
+          shutdownError ??= error;
+        }
       }
 
       try {
@@ -367,14 +516,22 @@ export function createWorkerProcess({
   return {
     start,
     shutdown,
+
     getRuntime: () => runtime,
+
+    getRecoveryScheduler: () => recoveryScheduler,
+
     isStarted: () => started,
+
     isShuttingDown: () => shuttingDown,
   };
 }
 
 /**
- * Starts the process-level worker and reports fatal startup failures.
+ * Starts the production worker process.
+ *
+ * Fatal startup failures set the process exit code after attempting to
+ * disconnect Prisma.
  *
  * @returns {Promise<void>}
  */
@@ -389,7 +546,7 @@ export async function main() {
     try {
       await prisma.$disconnect();
     } catch {
-      // The original startup error remains the primary failure.
+      // Preserve the original startup failure.
     }
 
     process.exitCode = 1;
