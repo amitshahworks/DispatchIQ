@@ -15,6 +15,7 @@ import { authRouter } from '../auth/auth.routes.js';
 import { jobRouter } from '../jobs/job.routes.js';
 import { metricsRouter } from '../metrics/metrics.routes.js';
 import { asyncHandler } from '../utils/async-handler.js';
+import { workerRouter } from '../workers/worker.routes.js';
 
 export const router = Router();
 
@@ -71,3 +72,4 @@ router.use('/api/v1/auth', authRouter);
 router.use('/api/v1/jobs', jobRouter);
 router.use('/api/v1/metrics', metricsRouter);
 router.use('/api/v1/api-keys', apiKeyRouter);
+router.use('/api/v1/workers', workerRouter);
