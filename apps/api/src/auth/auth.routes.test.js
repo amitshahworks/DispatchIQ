@@ -1,7 +1,14 @@
 /**
  * @file auth.routes.test.js
  * @description Integration-style route tests for DispatchIQ authentication
- * routing, validation, middleware order, and controller delegation.
+ * routing, rate limiting, validation, middleware order, and controller
+ * delegation.
+ *
+ * Authentication controllers and rate-limit middleware are mocked so this
+ * suite verifies route composition independently of authentication business
+ * logic and express-rate-limit's internal quota implementation.
+ *
+ * Real quota behavior is covered separately by security/rate-limit.test.js.
  */
 
 import express from 'express';
@@ -15,11 +22,19 @@ const logoutControllerMock = vi.fn();
 const meControllerMock = vi.fn();
 const authenticateMock = vi.fn();
 
+const registrationRateLimiterMock = vi.fn();
+const loginRateLimiterMock = vi.fn();
+const refreshTokenRateLimiterMock = vi.fn();
+
 vi.mock('./auth.controller.js', () => ({
   registerController: registerControllerMock,
+
   loginController: loginControllerMock,
+
   refreshController: refreshControllerMock,
+
   logoutController: logoutControllerMock,
+
   meController: meControllerMock,
 }));
 
@@ -27,20 +42,47 @@ vi.mock('../middleware/authenticate.js', () => ({
   authenticate: authenticateMock,
 }));
 
+vi.mock('../security/rate-limit.js', () => ({
+  registrationRateLimiter: registrationRateLimiterMock,
+
+  loginRateLimiter: loginRateLimiterMock,
+
+  refreshTokenRateLimiter: refreshTokenRateLimiterMock,
+}));
+
+/*
+ * Route modules capture middleware references during import. The limiter mocks
+ * therefore require pass-through implementations before auth.routes.js loads.
+ */
+registrationRateLimiterMock.mockImplementation((_req, _res, next) => next());
+
+loginRateLimiterMock.mockImplementation((_req, _res, next) => next());
+
+refreshTokenRateLimiterMock.mockImplementation((_req, _res, next) => next());
+
 const { authRouter } = await import('./auth.routes.js');
 
+/**
+ * Creates an isolated Express application for authentication route tests.
+ *
+ * @returns {import('express').Express} Test application.
+ */
 function createTestApp() {
   const app = express();
 
   app.use(express.json());
+
   app.use('/auth', authRouter);
 
   app.use((error, _req, res, _next) => {
-    res.status(error.statusCode ?? 500).json({
+    return res.status(error.statusCode ?? 500).json({
       success: false,
+
       error: {
         code: error.code ?? 'INTERNAL_SERVER_ERROR',
+
         message: error.message,
+
         details: error.details,
       },
     });
@@ -53,9 +95,16 @@ describe('authentication routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    registrationRateLimiterMock.mockImplementation((_req, _res, next) => next());
+
+    loginRateLimiterMock.mockImplementation((_req, _res, next) => next());
+
+    refreshTokenRateLimiterMock.mockImplementation((_req, _res, next) => next());
+
     registerControllerMock.mockImplementation((_req, res) =>
       res.status(201).json({
         success: true,
+
         data: {
           endpoint: 'register',
         },
@@ -65,6 +114,7 @@ describe('authentication routes', () => {
     loginControllerMock.mockImplementation((_req, res) =>
       res.status(200).json({
         success: true,
+
         data: {
           endpoint: 'login',
         },
@@ -74,6 +124,7 @@ describe('authentication routes', () => {
     refreshControllerMock.mockImplementation((_req, res) =>
       res.status(200).json({
         success: true,
+
         data: {
           endpoint: 'refresh',
         },
@@ -83,6 +134,7 @@ describe('authentication routes', () => {
     logoutControllerMock.mockImplementation((_req, res) =>
       res.status(200).json({
         success: true,
+
         data: {
           endpoint: 'logout',
         },
@@ -92,6 +144,7 @@ describe('authentication routes', () => {
     meControllerMock.mockImplementation((_req, res) =>
       res.status(200).json({
         success: true,
+
         data: {
           endpoint: 'me',
         },
@@ -110,9 +163,23 @@ describe('authentication routes', () => {
   });
 
   describe('POST /auth/register', () => {
+    it('runs registration rate limiting before validation and controller execution', async () => {
+      const response = await request(createTestApp()).post('/auth/register').send({
+        email: 'amit@example.com',
+        password: 'SecurePassword123',
+      });
+
+      expect(response.status).toBe(201);
+
+      expect(registrationRateLimiterMock).toHaveBeenCalledOnce();
+
+      expect(registerControllerMock).toHaveBeenCalledOnce();
+    });
+
     it('validates input and delegates to the register controller', async () => {
       const response = await request(createTestApp()).post('/auth/register').send({
         email: '  Amit@Example.COM  ',
+
         password: 'SecurePassword123',
       });
 
@@ -124,6 +191,7 @@ describe('authentication routes', () => {
 
       expect(controllerRequest.body).toEqual({
         email: 'amit@example.com',
+
         password: 'SecurePassword123',
       });
     });
@@ -138,8 +206,10 @@ describe('authentication routes', () => {
 
       expect(response.body).toMatchObject({
         success: false,
+
         error: {
           code: 'VALIDATION_ERROR',
+
           message: 'Request validation failed.',
         },
       });
@@ -150,7 +220,9 @@ describe('authentication routes', () => {
     it('strips a client-supplied role before registration', async () => {
       await request(createTestApp()).post('/auth/register').send({
         email: 'amit@example.com',
+
         password: 'SecurePassword123',
+
         role: 'ADMIN',
       });
 
@@ -158,25 +230,75 @@ describe('authentication routes', () => {
 
       expect(controllerRequest.body).toEqual({
         email: 'amit@example.com',
+
         password: 'SecurePassword123',
       });
+    });
+
+    it('stops registration when the registration rate limit is exceeded', async () => {
+      registrationRateLimiterMock.mockImplementation((_req, res, _next) =>
+        res.status(429).json({
+          success: false,
+
+          error: {
+            code: 'REGISTRATION_RATE_LIMIT_EXCEEDED',
+
+            message: 'Too many registration attempts. Please try again later.',
+          },
+        }),
+      );
+
+      const response = await request(createTestApp()).post('/auth/register').send({
+        email: 'amit@example.com',
+
+        password: 'SecurePassword123',
+      });
+
+      expect(response.status).toBe(429);
+
+      expect(response.body).toMatchObject({
+        success: false,
+
+        error: {
+          code: 'REGISTRATION_RATE_LIMIT_EXCEEDED',
+        },
+      });
+
+      expect(registerControllerMock).not.toHaveBeenCalled();
     });
   });
 
   describe('POST /auth/login', () => {
-    it('validates input and delegates to the login controller', async () => {
+    it('runs login rate limiting before validation and controller execution', async () => {
       const response = await request(createTestApp()).post('/auth/login').send({
-        email: '  Amit@Example.COM ',
+        email: 'amit@example.com',
+
         password: 'existing-password',
       });
 
       expect(response.status).toBe(200);
+
+      expect(loginRateLimiterMock).toHaveBeenCalledOnce();
+
+      expect(loginControllerMock).toHaveBeenCalledOnce();
+    });
+
+    it('validates input and delegates to the login controller', async () => {
+      const response = await request(createTestApp()).post('/auth/login').send({
+        email: '  Amit@Example.COM ',
+
+        password: 'existing-password',
+      });
+
+      expect(response.status).toBe(200);
+
       expect(loginControllerMock).toHaveBeenCalledOnce();
 
       const controllerRequest = loginControllerMock.mock.calls[0][0];
 
       expect(controllerRequest.body).toEqual({
         email: 'amit@example.com',
+
         password: 'existing-password',
       });
     });
@@ -188,17 +310,63 @@ describe('authentication routes', () => {
       });
 
       expect(response.status).toBe(422);
+
+      expect(loginControllerMock).not.toHaveBeenCalled();
+    });
+
+    it('stops login when the login rate limit is exceeded', async () => {
+      loginRateLimiterMock.mockImplementation((_req, res, _next) =>
+        res.status(429).json({
+          success: false,
+
+          error: {
+            code: 'LOGIN_RATE_LIMIT_EXCEEDED',
+
+            message: 'Too many login attempts. Please try again later.',
+          },
+        }),
+      );
+
+      const response = await request(createTestApp()).post('/auth/login').send({
+        email: 'amit@example.com',
+
+        password: 'existing-password',
+      });
+
+      expect(response.status).toBe(429);
+
+      expect(response.body).toMatchObject({
+        success: false,
+
+        error: {
+          code: 'LOGIN_RATE_LIMIT_EXCEEDED',
+        },
+      });
+
       expect(loginControllerMock).not.toHaveBeenCalled();
     });
   });
 
   describe('POST /auth/refresh', () => {
+    it('runs refresh-token rate limiting before validation and controller execution', async () => {
+      const response = await request(createTestApp()).post('/auth/refresh').send({
+        refreshToken: 'current-refresh-token',
+      });
+
+      expect(response.status).toBe(200);
+
+      expect(refreshTokenRateLimiterMock).toHaveBeenCalledOnce();
+
+      expect(refreshControllerMock).toHaveBeenCalledOnce();
+    });
+
     it('validates input and delegates to the refresh controller', async () => {
       const response = await request(createTestApp()).post('/auth/refresh').send({
         refreshToken: 'current-refresh-token',
       });
 
       expect(response.status).toBe(200);
+
       expect(refreshControllerMock).toHaveBeenCalledOnce();
     });
 
@@ -206,6 +374,37 @@ describe('authentication routes', () => {
       const response = await request(createTestApp()).post('/auth/refresh').send({});
 
       expect(response.status).toBe(422);
+
+      expect(refreshControllerMock).not.toHaveBeenCalled();
+    });
+
+    it('stops refresh requests when the refresh rate limit is exceeded', async () => {
+      refreshTokenRateLimiterMock.mockImplementation((_req, res, _next) =>
+        res.status(429).json({
+          success: false,
+
+          error: {
+            code: 'REFRESH_RATE_LIMIT_EXCEEDED',
+
+            message: 'Too many token refresh requests. Please try again later.',
+          },
+        }),
+      );
+
+      const response = await request(createTestApp()).post('/auth/refresh').send({
+        refreshToken: 'current-refresh-token',
+      });
+
+      expect(response.status).toBe(429);
+
+      expect(response.body).toMatchObject({
+        success: false,
+
+        error: {
+          code: 'REFRESH_RATE_LIMIT_EXCEEDED',
+        },
+      });
+
       expect(refreshControllerMock).not.toHaveBeenCalled();
     });
   });
@@ -217,6 +416,7 @@ describe('authentication routes', () => {
       });
 
       expect(response.status).toBe(200);
+
       expect(logoutControllerMock).toHaveBeenCalledOnce();
     });
 
@@ -226,7 +426,20 @@ describe('authentication routes', () => {
       });
 
       expect(response.status).toBe(422);
+
       expect(logoutControllerMock).not.toHaveBeenCalled();
+    });
+
+    it('does not apply an authentication-specific rate limiter to logout', async () => {
+      await request(createTestApp()).post('/auth/logout').send({
+        refreshToken: 'refresh-token',
+      });
+
+      expect(registrationRateLimiterMock).not.toHaveBeenCalled();
+
+      expect(loginRateLimiterMock).not.toHaveBeenCalled();
+
+      expect(refreshTokenRateLimiterMock).not.toHaveBeenCalled();
     });
   });
 
@@ -235,7 +448,9 @@ describe('authentication routes', () => {
       const response = await request(createTestApp()).get('/auth/me');
 
       expect(response.status).toBe(200);
+
       expect(authenticateMock).toHaveBeenCalledOnce();
+
       expect(meControllerMock).toHaveBeenCalledOnce();
 
       const controllerRequest = meControllerMock.mock.calls[0][0];
@@ -252,6 +467,7 @@ describe('authentication routes', () => {
         const error = new Error('Authentication is required.');
 
         error.statusCode = 401;
+
         error.code = 'AUTHENTICATION_REQUIRED';
 
         next(error);
@@ -263,12 +479,23 @@ describe('authentication routes', () => {
 
       expect(response.body).toMatchObject({
         success: false,
+
         error: {
           code: 'AUTHENTICATION_REQUIRED',
         },
       });
 
       expect(meControllerMock).not.toHaveBeenCalled();
+    });
+
+    it('does not apply authentication endpoint rate limiters to the current-user endpoint', async () => {
+      await request(createTestApp()).get('/auth/me');
+
+      expect(registrationRateLimiterMock).not.toHaveBeenCalled();
+
+      expect(loginRateLimiterMock).not.toHaveBeenCalled();
+
+      expect(refreshTokenRateLimiterMock).not.toHaveBeenCalled();
     });
   });
 });

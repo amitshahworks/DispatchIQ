@@ -19,14 +19,19 @@ import {
   registerController,
 } from './auth.controller.js';
 import { loginSchema, logoutSchema, refreshSchema, registerSchema } from './auth.validation.js';
+import {
+  loginRateLimiter,
+  refreshTokenRateLimiter,
+  registrationRateLimiter,
+} from '../security/rate-limit.js';
 
 export const authRouter = Router();
 
-authRouter.post('/register', validate(registerSchema), registerController);
+authRouter.post('/register', registrationRateLimiter, validate(registerSchema), registerController);
 
-authRouter.post('/login', validate(loginSchema), loginController);
+authRouter.post('/login', loginRateLimiter, validate(loginSchema), loginController);
 
-authRouter.post('/refresh', validate(refreshSchema), refreshController);
+authRouter.post('/refresh', refreshTokenRateLimiter, validate(refreshSchema), refreshController);
 
 authRouter.post('/logout', validate(logoutSchema), logoutController);
 

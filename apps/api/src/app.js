@@ -3,8 +3,8 @@
  * @description Constructs and configures the DispatchIQ Express application.
  *
  * The application assembles security middleware, request parsing, correlation
- * metadata, structured request logging, routes, and centralized error
- * handling. Network binding remains the responsibility of server.js.
+ * metadata, structured request logging, rate limiting, routes, and centralized
+ * error handling. Network binding remains the responsibility of server.js.
  */
 
 import cors from 'cors';
@@ -17,6 +17,7 @@ import { errorHandler } from './middleware/error-handler.js';
 import { notFound } from './middleware/not-found.js';
 import { requestId } from './middleware/request-id.js';
 import { router } from './routes/index.js';
+import { apiRateLimiter } from './security/rate-limit.js';
 
 /**
  * Builds a fully configured Express application instance.
@@ -28,16 +29,24 @@ import { router } from './routes/index.js';
  * 3. Request body parsing
  * 4. Request correlation
  * 5. Structured HTTP logging
- * 6. Application routes
- * 7. 404 handling
- * 8. Centralized error handling
+ * 6. Global API rate limiting
+ * 7. Application routes
+ * 8. 404 handling
+ * 9. Centralized error handling
  *
- * Request correlation is registered before structured logging so every
- * completed HTTP request can be associated with the same request identifier.
+ * Request correlation executes before logging and rate limiting so normal and
+ * rate-limited responses can use the same request identifier.
  *
+ * The global limiter is injectable for deterministic application integration
+ * testing. Production callers normally omit this option and receive the
+ * standard DispatchIQ API rate limiter.
+ *
+ * @param {{
+ *   rateLimiter?: import('express').RequestHandler
+ * }} [options] Application construction options.
  * @returns {import('express').Express} Configured Express application.
  */
-export function createApp() {
+export function createApp({ rateLimiter = apiRateLimiter } = {}) {
   const app = express();
 
   app.use(helmet());
@@ -57,17 +66,18 @@ export function createApp() {
   );
 
   /*
-   * Every request receives a stable correlation identifier before logging,
-   * authentication, validation, routing, or error handling occurs.
+   * Correlation must precede logging and rate limiting so rejected requests
+   * remain traceable through the same request identifier contract.
    */
   app.use(requestId);
 
-  /*
-   * Structured request logging replaces Morgan. The logger records completed
-   * requests together with request ID, status code, duration, path, and safe
-   * authentication context.
-   */
   app.use(requestLogger);
+
+  /*
+   * Broad API abuse protection executes before application routes.
+   * Authentication endpoints apply additional route-specific policies.
+   */
+  app.use(rateLimiter);
 
   app.use(router);
 

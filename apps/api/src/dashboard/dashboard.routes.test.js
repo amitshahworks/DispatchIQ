@@ -138,5 +138,4 @@ describe('dashboard routes', () => {
 
     expect(overviewControllerMock).not.toHaveBeenCalled();
   });
-
 });
