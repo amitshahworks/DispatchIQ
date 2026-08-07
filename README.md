@@ -127,18 +127,18 @@ The project focuses on reliability, fault tolerance, and clean software architec
 
 # Technology Stack
 
-| Layer | Technology |
-|--------|------------|
-| Language | JavaScript (ES Modules) |
-| Runtime | Node.js 24 |
-| API | Express 5 |
-| Database | PostgreSQL 17 |
-| ORM | Prisma ORM 7 |
-| Validation | Zod |
-| Authentication | JWT |
-| Password Hashing | bcrypt |
-| Testing | Vitest |
-| Containerization | Docker |
+| Layer            | Technology              |
+| ---------------- | ----------------------- |
+| Language         | JavaScript (ES Modules) |
+| Runtime          | Node.js 24              |
+| API              | Express 5               |
+| Database         | PostgreSQL 17           |
+| ORM              | Prisma ORM 7            |
+| Validation       | Zod                     |
+| Authentication   | JWT                     |
+| Password Hashing | bcrypt                  |
+| Testing          | Vitest                  |
+| Containerization | Docker                  |
 
 ---
 
@@ -230,16 +230,16 @@ OFFLINE
 
 # API Overview
 
-| Method | Endpoint | Description |
-|---------|----------|-------------|
-| POST | `/auth/register` | Register a user |
-| POST | `/auth/login` | Authenticate user |
-| POST | `/auth/refresh` | Refresh access token |
-| POST | `/auth/logout` | Revoke refresh token |
-| POST | `/jobs` | Create a job |
-| GET | `/jobs` | List jobs |
-| GET | `/jobs/:id` | Job details |
-| PATCH | `/jobs/:id/cancel` | Cancel a job |
+| Method | Endpoint           | Description          |
+| ------ | ------------------ | -------------------- |
+| POST   | `/auth/register`   | Register a user      |
+| POST   | `/auth/login`      | Authenticate user    |
+| POST   | `/auth/refresh`    | Refresh access token |
+| POST   | `/auth/logout`     | Revoke refresh token |
+| POST   | `/jobs`            | Create a job         |
+| GET    | `/jobs`            | List jobs            |
+| GET    | `/jobs/:id`        | Job details          |
+| PATCH  | `/jobs/:id/cancel` | Cancel a job         |
 
 ---
 
@@ -323,19 +323,19 @@ npm run dev:worker
 
 # Environment Variables
 
-| Variable | Description |
-|------------|-------------|
-| DATABASE_URL | PostgreSQL connection |
-| PORT | API server port |
-| JWT_ACCESS_SECRET | JWT signing secret |
-| JWT_ACCESS_EXPIRES_IN | Token lifetime |
-| REFRESH_TOKEN_EXPIRES_DAYS | Refresh token expiry |
-| WORKER_HOSTNAME | Worker identifier |
-| WORKER_POLL_INTERVAL_MS | Queue polling interval |
-| WORKER_HEARTBEAT_INTERVAL_MS | Heartbeat interval |
-| WORKER_RETRY_BASE_DELAY_MS | Retry backoff |
-| WORKER_RETRY_MAX_DELAY_MS | Maximum retry delay |
-| WORKER_RECOVERY_INTERVAL_MS | Recovery scheduler interval |
+| Variable                     | Description                 |
+| ---------------------------- | --------------------------- |
+| DATABASE_URL                 | PostgreSQL connection       |
+| PORT                         | API server port             |
+| JWT_ACCESS_SECRET            | JWT signing secret          |
+| JWT_ACCESS_EXPIRES_IN        | Token lifetime              |
+| REFRESH_TOKEN_EXPIRES_DAYS   | Refresh token expiry        |
+| WORKER_HOSTNAME              | Worker identifier           |
+| WORKER_POLL_INTERVAL_MS      | Queue polling interval      |
+| WORKER_HEARTBEAT_INTERVAL_MS | Heartbeat interval          |
+| WORKER_RETRY_BASE_DELAY_MS   | Retry backoff               |
+| WORKER_RETRY_MAX_DELAY_MS    | Maximum retry delay         |
+| WORKER_RECOVERY_INTERVAL_MS  | Recovery scheduler interval |
 
 ---
 
